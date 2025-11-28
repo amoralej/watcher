@@ -20,9 +20,11 @@ import abc
 
 from oslo_config import cfg
 from oslo_log import log
+from osprofiler import profiler
 
 from watcher.applier import rpcapi
 from watcher.common import exception
+from watcher.common.profiler import trace_with_memory
 from watcher.common import service
 from watcher.decision_engine.loading import default as loader
 from watcher.decision_engine.strategy.context import default as default_context
@@ -77,6 +79,11 @@ class AuditHandler(BaseAuditHandler, metaclass=abc.ABCMeta):
     def strategy_context(self):
         return self._strategy_context
 
+    @profiler.trace("watcher-strategy-execute",
+                    info=lambda self, audit, ctx: {
+                        "audit_id": audit.uuid,
+                        "strategy": audit.strategy.name if audit.strategy else None
+                    })
     def do_execute(self, audit, request_context):
         # execute the strategy
         solution = self.strategy_context.execute_strategy(
@@ -84,6 +91,11 @@ class AuditHandler(BaseAuditHandler, metaclass=abc.ABCMeta):
 
         return solution
 
+    @profiler.trace("watcher-planner-schedule",
+                    info=lambda self, ctx, audit, solution: {
+                        "audit_id": audit.uuid,
+                        "planner": solution.strategy.planner
+                    })
     def do_schedule(self, request_context, audit, solution):
         try:
             notifications.audit.send_action_notification(
@@ -121,6 +133,8 @@ class AuditHandler(BaseAuditHandler, metaclass=abc.ABCMeta):
             raise exception.ActionPlanIsOngoing(
                 action_plan=ongoing_action_plans[0].uuid)
 
+    @profiler.trace("watcher-audit-pre-execute",
+                    info=lambda self, audit, ctx: {"audit_id": audit.uuid})
     def pre_execute(self, audit, request_context):
         LOG.debug("Trigger audit %s", audit.uuid)
         # If audit.force is true, audit will be executed
@@ -132,12 +146,20 @@ class AuditHandler(BaseAuditHandler, metaclass=abc.ABCMeta):
         # change state of the audit to ONGOING
         self.update_audit_state(audit, objects.audit.State.ONGOING)
 
+    @profiler.trace("watcher-audit-post-execute",
+                    info=lambda self, audit, solution, ctx: {"audit_id": audit.uuid})
     def post_execute(self, audit, solution, request_context):
         action_plan = self.do_schedule(request_context, audit, solution)
         if audit.auto_trigger:
             self.applier_client.launch_action_plan(request_context,
                                                    action_plan.uuid)
 
+    @trace_with_memory("watcher-audit-execute",
+                      info=lambda self, audit, ctx: {
+                          "audit_id": audit.uuid,
+                          "goal": audit.goal.name if audit.goal else None,
+                          "audit_type": audit.audit_type
+                      })
     def execute(self, audit, request_context):
         try:
             self.pre_execute(audit, request_context)

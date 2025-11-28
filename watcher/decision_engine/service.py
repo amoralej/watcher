@@ -12,10 +12,20 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 
+import socket
+
+from oslo_config import cfg
+from oslo_log import log
+from osprofiler import initializer as osprofiler_initializer
+
+from watcher.common import context
 from watcher.common import service as watcher_service
 from watcher.decision_engine.audit import continuous as c_handler
 from watcher.decision_engine import manager
 from watcher.decision_engine import scheduling
+
+CONF = cfg.CONF
+LOG = log.getLogger(__name__)
 
 
 class DecisionEngineService(watcher_service.Service):
@@ -49,6 +59,22 @@ class DecisionEngineService(watcher_service.Service):
     def start(self):
         """Start service."""
         super().start()
+
+        # Initialize osprofiler if enabled
+        if CONF.profiler.enabled:
+            try:
+                osprofiler_initializer.init_from_conf(
+                    conf=CONF,
+                    context=context.get_admin_context().to_dict(),
+                    project="watcher",
+                    service="decision-engine",
+                    host=socket.gethostname()
+                )
+                LOG.info("OSProfiler initialized successfully for decision engine")
+            except Exception as e:
+                LOG.warning("Failed to initialize osprofiler: %s. "
+                           "Profiling will be disabled.", e)
+
         self.bg_scheduler.start()
         self.continuous_handler.start()
 
